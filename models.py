@@ -69,7 +69,77 @@ class HmmNerModel(object):
         :param sentence_tokens: List of the tokens in the sentence to tag
         :return: The LabeledSentence consisting of predictions over the sentence
         """
-        raise Exception("IMPLEMENT ME")
+        # raise Exception("IMPLEMENT ME")
+        V = [{}]
+        for tag in range(len(self.tag_indexer)):
+            V[0][tag] = {
+                "prob": self.init_log_probs[tag] + self.emission_log_probs[tag][self.word_indexer.index_of(sentence_tokens[0].word)],
+                "prev": None}
+        for t in range(1, len(sentence_tokens)):
+            V.append({})
+            for tag in range(len(self.tag_indexer)):
+                if(tag == 4):
+                    max_tr_prob = V[t - 1][3]["prob"] + self.transition_log_probs[3][tag]
+                    prev_st_selected = 3
+                    tr_prob = V[t - 1][4]["prob"] + self.transition_log_probs[4][tag]
+                    if tr_prob > max_tr_prob:
+                        max_tr_prob = tr_prob
+                        prev_st_selected = 4
+
+                elif (tag == 6):
+                    max_tr_prob = V[t - 1][1]["prob"] + self.transition_log_probs[1][tag]
+                    prev_st_selected = 1
+                    tr_prob = V[t - 1][6]["prob"] + self.transition_log_probs[6][tag]
+                    if tr_prob > max_tr_prob:
+                        max_tr_prob = tr_prob
+                        prev_st_selected = 6
+
+                elif (tag == 7):
+                    max_tr_prob = V[t - 1][2]["prob"] + self.transition_log_probs[2][tag]
+                    prev_st_selected = 2
+                    tr_prob = V[t - 1][7]["prob"] + self.transition_log_probs[7][tag]
+                    if tr_prob > max_tr_prob:
+                        max_tr_prob = tr_prob
+                        prev_st_selected = 7
+                elif (tag == 8):
+                    max_tr_prob = V[t - 1][5]["prob"] + self.transition_log_probs[5][tag]
+                    prev_st_selected = 5
+                    tr_prob = V[t - 1][8]["prob"] + self.transition_log_probs[8][tag]
+                    if tr_prob > max_tr_prob:
+                        max_tr_prob = tr_prob
+                        prev_st_selected = 8
+
+                else:
+                    max_tr_prob = V[t - 1][0]["prob"] + self.transition_log_probs[0][tag]
+                    prev_st_selected = 0
+                    for prev_st in range(1, len(self.tag_indexer)):
+                        tr_prob = V[t - 1][prev_st]["prob"] + self.transition_log_probs[prev_st][tag]
+                        if tr_prob > max_tr_prob:
+                            max_tr_prob = tr_prob
+                            prev_st_selected = prev_st
+
+
+                max_prob = max_tr_prob + self.emission_log_probs[tag][self.word_indexer.index_of(sentence_tokens[t].word)]
+                V[t][tag] = {"prob": max_prob, "prev": prev_st_selected}
+
+        opt = []
+        max_prob = -float('inf')
+        best_st = None
+
+        for st, data in V[-1].items():
+            if data["prob"] > max_prob:
+                max_prob = data["prob"]
+                best_st = st
+        opt.append(self.tag_indexer.get_object(best_st))
+        previous = best_st
+
+        for t in range(len(V) - 2, -1, -1):
+            opt.insert(0, self.tag_indexer.get_object(V[t + 1][previous]["prev"]))
+            previous = V[t + 1][previous]["prev"]
+
+        # print("The steps of states are " + " ".join(opt) + " with highest probability of %s" % max_prob)
+        return LabeledSentence(sentence_tokens, chunks_from_bio_tag_seq(opt))
+
 
 
 def train_hmm_model(sentences: List[LabeledSentence], silent: bool=False) -> HmmNerModel:

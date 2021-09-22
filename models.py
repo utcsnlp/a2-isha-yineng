@@ -62,6 +62,7 @@ class HmmNerModel(object):
         self.init_log_probs = init_log_probs
         self.transition_log_probs = transition_log_probs
         self.emission_log_probs = emission_log_probs
+        self.scorer = ProbabilisticSequenceScorer(tag_indexer, word_indexer, init_log_probs, transition_log_probs, emission_log_probs)
 
     def decode(self, sentence_tokens: List[Token]) -> LabeledSentence:
         """
@@ -73,53 +74,53 @@ class HmmNerModel(object):
         V = [{}]
         for tag in range(len(self.tag_indexer)):
             V[0][tag] = {
-                "prob": self.init_log_probs[tag] + self.emission_log_probs[tag][self.word_indexer.index_of(sentence_tokens[0].word)],
+                "prob": self.scorer.score_init(sentence_tokens, tag) + self.scorer.score_emission(sentence_tokens, tag, 0),
                 "prev": None}
         for t in range(1, len(sentence_tokens)):
             V.append({})
             for tag in range(len(self.tag_indexer)):
                 if(tag == 4):
-                    max_tr_prob = V[t - 1][3]["prob"] + self.transition_log_probs[3][tag]
+                    max_tr_prob = V[t - 1][3]["prob"] + self.scorer.score_transition(sentence_tokens, 3, tag)
                     prev_st_selected = 3
-                    tr_prob = V[t - 1][4]["prob"] + self.transition_log_probs[4][tag]
+                    tr_prob = V[t - 1][4]["prob"] + self.scorer.score_transition(sentence_tokens, 4, tag)
                     if tr_prob > max_tr_prob:
                         max_tr_prob = tr_prob
                         prev_st_selected = 4
 
                 elif (tag == 6):
-                    max_tr_prob = V[t - 1][1]["prob"] + self.transition_log_probs[1][tag]
+                    max_tr_prob = V[t - 1][1]["prob"] + self.scorer.score_transition(sentence_tokens, 1, tag)
                     prev_st_selected = 1
-                    tr_prob = V[t - 1][6]["prob"] + self.transition_log_probs[6][tag]
+                    tr_prob = V[t - 1][6]["prob"] + self.scorer.score_transition(sentence_tokens, 6, tag)
                     if tr_prob > max_tr_prob:
                         max_tr_prob = tr_prob
                         prev_st_selected = 6
 
                 elif (tag == 7):
-                    max_tr_prob = V[t - 1][2]["prob"] + self.transition_log_probs[2][tag]
+                    max_tr_prob = V[t - 1][2]["prob"] + self.scorer.score_transition(sentence_tokens, 2, tag)
                     prev_st_selected = 2
-                    tr_prob = V[t - 1][7]["prob"] + self.transition_log_probs[7][tag]
+                    tr_prob = V[t - 1][7]["prob"] + self.scorer.score_transition(sentence_tokens, 7, tag)
                     if tr_prob > max_tr_prob:
                         max_tr_prob = tr_prob
                         prev_st_selected = 7
                 elif (tag == 8):
-                    max_tr_prob = V[t - 1][5]["prob"] + self.transition_log_probs[5][tag]
+                    max_tr_prob = V[t - 1][5]["prob"] + self.scorer.score_transition(sentence_tokens, 5, tag)
                     prev_st_selected = 5
-                    tr_prob = V[t - 1][8]["prob"] + self.transition_log_probs[8][tag]
+                    tr_prob = V[t - 1][8]["prob"] + self.scorer.score_transition(sentence_tokens, 8, tag)
                     if tr_prob > max_tr_prob:
                         max_tr_prob = tr_prob
                         prev_st_selected = 8
 
                 else:
-                    max_tr_prob = V[t - 1][0]["prob"] + self.transition_log_probs[0][tag]
+                    max_tr_prob = V[t - 1][0]["prob"] + self.scorer.score_transition(sentence_tokens, 0, tag)
                     prev_st_selected = 0
                     for prev_st in range(1, len(self.tag_indexer)):
-                        tr_prob = V[t - 1][prev_st]["prob"] + self.transition_log_probs[prev_st][tag]
+                        tr_prob = V[t - 1][prev_st]["prob"] + self.scorer.score_transition(sentence_tokens, prev_st, tag)
                         if tr_prob > max_tr_prob:
                             max_tr_prob = tr_prob
                             prev_st_selected = prev_st
 
 
-                max_prob = max_tr_prob + self.emission_log_probs[tag][self.word_indexer.index_of(sentence_tokens[t].word)]
+                max_prob = max_tr_prob + self.scorer.score_emission(sentence_tokens, tag, t)
                 V[t][tag] = {"prob": max_prob, "prev": prev_st_selected}
 
         opt = []

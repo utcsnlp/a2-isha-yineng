@@ -313,11 +313,11 @@ class CrfNerModel(object):
         last_tag = np.argmax(viterbi, axis=0)[-1]
         bio_tags[-1] = self.tag_indexer.get_object(last_tag)
 
-        last_tag = backpointer[last_tag][-1]
+        last_tag = int(backpointer[last_tag][-1])
 
-        for cur_token in range(0, num_tokens-1, -1):
+        for cur_token in range(num_tokens-2, -1, -1):
             bio_tags[cur_token] = self.tag_indexer.get_object(last_tag)
-            last_tag = backpointer[last_tag][cur_token]
+            last_tag = int(backpointer[last_tag][cur_token])
 
         return LabeledSentence(sentence_tokens, chunks_from_bio_tag_seq(bio_tags))
 
@@ -353,7 +353,7 @@ class CrfNerModel(object):
                 total = 0
                 emission_score = self.scorer.score_emission(sentence_tokens, cur_tag, cur_token)  # move out of loop to avoid recompute
                 for prev_tag in range(num_tags):
-                    total = np.logaddexp(total, forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
+                    total += np.logaddexp(total, forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
                 forward[cur_tag][cur_token] = total
 
         #--- Backward Part ---
@@ -362,15 +362,15 @@ class CrfNerModel(object):
             backward[tag_idx][-1] = 1
 
         # recursion step
-        for cur_token in range(0, num_tokens-1, -1):
+        for cur_token in range(num_tokens - 2, -1, -1):
             for cur_tag in range(num_tags):
                 total = 0
                 for next_tag in range(num_tags):
-                    total = np.logaddexp(total, forward[next_tag][cur_token+1] +
+                    total += np.logaddexp(total, backward[next_tag][cur_token+1] +
                            self.scorer.score_emission(sentence_tokens, next_tag, cur_token+1) + self.scorer.score_transition(sentence_tokens, cur_tag, next_tag))
-                forward[cur_tag][cur_token] = total
+                backward[cur_tag][cur_token] = total
 
-        return np.exp(forward), np.exp(backward)  # back to real space
+        return forward, backward  # back to real space
 
     def compute_gradient(self, labeled_sentence: LabeledSentence, sentence_idx: int):
         """

@@ -239,18 +239,32 @@ class FeatureBasedSequenceScorer(object):
     def score_transition(self, sentence_tokens, prev_tag_idx, curr_tag_idx):
         prev_tag = self.tag_indexer.get_object(prev_tag_idx)
         curr_tag = self.tag_indexer.get_object(curr_tag_idx)
-        raise Exception("IMPLEMENT ME")
+
+        # rule, I-XXX must follows a B-XXX
+        if isI(curr_tag):
+            if (isI(prev_tag) or isB(prev_tag)) and get_tag_label(prev_tag) == get_tag_label(curr_tag):
+                return 0
+            else:
+                return -1000  # impossible, so give a huge penalty
+        return 0
 
     def score_emission(self, sentence_tokens, tag_idx, word_posn):
         feats = self.feat_cache[word_posn][tag_idx]
-        return self.feature_weights.score(feats)
+        score = 0
+        for f in feats:
+            score += self.feature_weights[f][tag_idx]
+
+        return score
 
 
 class CrfNerModel(object):
-    def __init__(self, tag_indexer, feature_indexer, feature_weights):
+    def __init__(self, tag_indexer, feature_indexer, feature_weights, feature_cache):
         self.tag_indexer = tag_indexer
         self.feature_indexer = feature_indexer
         self.feature_weights = feature_weights
+        self.feature_cache = feature_cache
+        self.scorer = None
+
 
     def decode(self, sentence_tokens: List[Token]) -> LabeledSentence:
         """
@@ -258,7 +272,55 @@ class CrfNerModel(object):
         :param sentence_tokens: List of the tokens in the sentence to tag
         :return: The LabeledSentence consisting of predictions over the sentence
         """
-        raise Exception("IMPLEMENT ME")
+        num_tokens = len(sentence_tokens)
+        num_tags = len(self.tag_indexer)
+        viterbi = np.zeros((num_tags, num_tokens))  # a matrix for dynamic programming
+        backpointer = np.zeros((num_tags, num_tokens))
+
+        # if feature_cache is None, need to extract feature first
+        if self.feature_cache is None:
+            feature_cache = [[[] for k in range(num_tags)] for j in range(num_tokens)]
+            for word_idx in range(num_tokens):
+                for tag_idx in range(num_tags):
+                    feature_cache[word_idx][tag_idx] = extract_emission_features(sentence_tokens, word_idx, self.tag_indexer.get_object(tag_idx), self.feature_indexer, add_to_indexer=False)
+            self.update_scorer(feature_cache)
+
+        # initialization step
+        for tag_idx in range(num_tags):
+            viterbi[tag_idx][0] = self.scorer.score_init(sentence_tokens, tag_idx) + self.scorer.score_emission(sentence_tokens, tag_idx, 0)
+            backpointer[tag_idx][0] = -1  # -1 for invalid idx
+
+        # recursion step
+        for cur_token in range(1, num_tokens):
+            for cur_tag in range(num_tags):
+                max_score = float('-inf')
+                arg_max = -1
+
+                emission_score = self.scorer.score_emission(sentence_tokens, cur_tag, cur_token)  # move out of loop to avoid recompute
+                for prev_tag in range(num_tags):
+                    transition_score = self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag)
+                    score = viterbi[cur_tag][cur_token-1] + emission_score + transition_score
+                    if score > max_score:
+                        max_score = score
+                        arg_max = prev_tag
+
+                viterbi[cur_tag][cur_token] = max_score
+                backpointer[cur_tag][cur_token] = arg_max
+
+        # find the tags by tracing backpointer
+        bio_tags = [""] * num_tokens
+
+        last_tag = np.argmax(viterbi, axis=0)[-1]
+        bio_tags[-1] = self.tag_indexer.get_object(last_tag)
+
+        last_tag = backpointer[last_tag][-1]
+
+        for cur_token in range(0, num_tokens-1, -1):
+            bio_tags[cur_token] = self.tag_indexer.get_object(last_tag)
+            last_tag = backpointer[last_tag][cur_token]
+
+        return LabeledSentence(sentence_tokens, chunks_from_bio_tag_seq(bio_tags))
+
 
     def decode_beam(self, sentence_tokens: List[Token]) -> LabeledSentence:
         """
@@ -268,6 +330,90 @@ class CrfNerModel(object):
         """
         raise Exception("IMPLEMENT ME")
 
+    def get_forward_backward(self, sentence_tokens: List[Token]):
+        """
+        This method will compute forward and backward array,
+        Should be call for every sentence.
+        Caller could use Forward-Backward algorithm to compute P(s_t = n | x).
+        Note: everything is computed in log space to avoid underflow
+        """
+        num_tokens = len(sentence_tokens)
+        num_tags = len(self.tag_indexer)
+        forward = np.zeros((num_tags, num_tokens))
+        backward = np.zeros((num_tags, num_tokens))
+
+        #--- Forward Part ---
+        # initialization step
+        for tag_idx in range(num_tags):
+            forward[tag_idx][0] = self.scorer.score_init(sentence_tokens, tag_idx) + self.scorer.score_emission(sentence_tokens, tag_idx, 0)
+
+        # recursion step
+        for cur_token in range(1, num_tokens):
+            for cur_tag in range(num_tags):
+                total = 0
+                emission_score = self.scorer.score_emission(sentence_tokens, cur_tag, cur_token)  # move out of loop to avoid recompute
+                for prev_tag in range(num_tags):
+                    total = np.logaddexp(total, forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
+                forward[cur_tag][cur_token] = total
+
+        #--- Backward Part ---
+        # initialization step
+        for tag_idx in range(num_tags):
+            backward[tag_idx][-1] = 1
+
+        # recursion step
+        for cur_token in range(0, num_tokens-1, -1):
+            for cur_tag in range(num_tags):
+                total = 0
+                for next_tag in range(num_tags):
+                    total = np.logaddexp(total, forward[next_tag][cur_token+1] +
+                           self.scorer.score_emission(sentence_tokens, next_tag, cur_token+1) + self.scorer.score_transition(sentence_tokens, cur_tag, next_tag))
+                forward[cur_tag][cur_token] = total
+
+        return np.exp(forward), np.exp(backward)  # back to real space
+
+    def compute_gradient(self, labeled_sentence: LabeledSentence, sentence_idx: int):
+        """
+        sentence with gold (sentence.tokens[0].chunk) and predicted labels (sentence.chunks)
+        """
+        num_tokens = len(labeled_sentence.tokens)
+        bio_tags = bio_tags_from_chunks(labeled_sentence.chunks, num_tokens)  # the predicted labels
+        num_tags = len(self.tag_indexer)
+        features = self.feature_cache[sentence_idx]
+
+        # use to compute marginal probabilities P(s_t = n | x).
+        forward, backward = self.get_forward_backward(labeled_sentence.tokens)
+
+        feature_sum = Counter()
+        expectation = Counter()
+
+        for token_idx in range(num_tokens):
+            # emission feature sum
+            tag_idx = self.tag_indexer.index_of(bio_tags[token_idx])
+            feature_sum += Counter(features[token_idx][tag_idx])
+
+            # emission feature expectation (apply forward-backward algorithm here)
+            for i in range(num_tokens):
+                # To compute P(y_i = s | x)
+                # the denominator is the same for each i
+                product = forward.transpose()[i] * backward.transpose()[i]
+                denominator = np.sum(product)
+                for s in range(num_tags):
+                    P = product[s] / denominator
+
+                    gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[i].chunk)
+                    f = Counter(features[token_idx][gold_tag_idx])
+
+                    for k in f.keys():
+                        f[k] = f[k] * P
+
+                    expectation += f
+
+        gradient = feature_sum - expectation
+        return gradient
+
+    def update_scorer(self, feature_cache):
+        self.scorer = FeatureBasedSequenceScorer(self.tag_indexer, self.feature_weights, feature_cache)
 
 def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> CrfNerModel:
     """
@@ -293,7 +439,26 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
                 feature_cache[sentence_idx][word_idx][tag_idx] = extract_emission_features(sentences[sentence_idx].tokens, word_idx, tag_indexer.get_object(tag_idx), feature_indexer, add_to_indexer=True)
     if not silent:
         print("Training")
-    raise Exception("IMPLEMENT THE REST OF ME")
+
+    # raise Exception("IMPLEMENT THE REST OF ME")
+    # initialize CRF
+    feature_weights = np.zeros((len(feature_indexer), len(tag_indexer)))
+    crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
+    optimizers = UnregularizedAdagradTrainer(feature_weights)
+
+    num_epoch = 1
+    for _ in range(num_epoch):
+        for sentence_idx in range(len(sentences)):
+            if sentence_idx % 100 == 0 and not silent:
+                print("Train %i/%i" % (sentence_idx, len(sentences)))
+            crf.update_scorer(feature_cache[sentence_idx])
+            labeled_sentence = crf.decode(sentences[sentence_idx].tokens)
+            gradient = crf.compute_gradient(labeled_sentence, sentence_idx)
+            optimizers.apply_gradient_update(gradient, 1)
+
+    # clear cache
+    crf.feature_cache = None
+    return crf
 
 
 def extract_emission_features(sentence_tokens: List[Token], word_index: int, tag: str, feature_indexer: Indexer, add_to_indexer: bool):

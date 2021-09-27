@@ -388,6 +388,8 @@ class CrfNerModel(object):
         feature_sum = Counter()
         expectation = Counter()
 
+        correct_label_counter = [0] * num_tags
+
         for token_idx in range(num_tokens):
             # emission feature sum
             tag_idx = self.tag_indexer.index_of(bio_tags[token_idx])
@@ -399,17 +401,25 @@ class CrfNerModel(object):
             # note the matrix's value is in log space, so the computing below should also in log space
             log_product = forward.transpose()[token_idx] + backward.transpose()[token_idx]
             denominator = logsumexp(log_product)
+
+            # find correct label
+            gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
+            if self.tag_indexer.index_of(bio_tags[token_idx]) == gold_tag_idx:
+                correct_label_counter[gold_tag_idx] += 1
+
             for s in range(num_tags):
                 P = np.exp(log_product[s] - denominator)
 
-                gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
                 f = Counter()
-
-                for k in features[token_idx][gold_tag_idx]:
+                for k in features[token_idx][s]:
                     f[k] = P
 
                 expectation.update(f)
         feature_sum.subtract(expectation)
+
+        for k in feature_sum.keys():
+            feature_sum[k] = np.array([-feature_sum[k] * num_tokens + correct_label_counter[i] for i in range(num_tags)])
+
         return feature_sum
 
     def update_scorer(self, feature_cache):
@@ -446,7 +456,7 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
     optimizers = UnregularizedAdagradTrainer(feature_weights)
 
-    num_epoch = 1
+    num_epoch = 4
 
     last_time = time.time()
     for _ in range(num_epoch):

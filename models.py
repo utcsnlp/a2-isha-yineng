@@ -369,29 +369,25 @@ class CrfNerModel(object):
 
         return forward, backward  # back to real space
 
-    def compute_gradient(self, labeled_sentence: LabeledSentence, sentence_idx: int):
+    def compute_gradient(self, sentence_tokens: List[Token], sentence_idx: int):
         """
         sentence with gold (sentence.tokens[0].chunk) and predicted labels (sentence.chunks)
         """
-        num_tokens = len(labeled_sentence.tokens)
-        bio_tags = bio_tags_from_chunks(labeled_sentence.chunks, num_tokens)  # the predicted labels
+        num_tokens = len(sentence_tokens)
         num_tags = len(self.tag_indexer)
         features = self.feature_cache[sentence_idx]
 
         # use to compute marginal probabilities P(s_t = n | x).
-        forward, backward = self.get_forward_backward(labeled_sentence.tokens)
+        forward, backward = self.get_forward_backward(sentence_tokens)
 
         feature_sum = Counter()
         expectation = Counter()
 
-        correct_label_counter = [0] * num_tags
-
         for token_idx in range(num_tokens):
             # find correct label
-            gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
+            gold_tag_idx = self.tag_indexer.index_of(sentence_tokens[token_idx].chunk)
 
             # emission feature sum
-            tag_idx = self.tag_indexer.index_of(bio_tags[token_idx])
             feature_sum.subtract(features[token_idx][gold_tag_idx])
 
             # emission feature expectation (apply forward-backward algorithm here)
@@ -401,14 +397,11 @@ class CrfNerModel(object):
             log_product = forward.transpose()[token_idx] + backward.transpose()[token_idx]
             denominator = logsumexp(log_product)
 
-            if self.tag_indexer.index_of(bio_tags[token_idx]) == gold_tag_idx:
-                correct_label_counter[gold_tag_idx] += 1
-
             for s in range(num_tags):
                 P = np.exp(log_product[s] - denominator)
 
                 f = Counter()
-                for k in features[token_idx][gold_tag_idx]:
+                for k in features[token_idx][s]:
                     f[k] = P
 
                 expectation.update(f)
@@ -464,8 +457,7 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
                 print(f"Estimate Time left: {estimate_min} min {estimate_sec} sec")
                 last_time = cur_time
             crf.update_scorer(feature_cache[sentence_idx])
-            labeled_sentence = crf.decode(sentences[sentence_idx].tokens)
-            gradient = crf.compute_gradient(labeled_sentence, sentence_idx)
+            gradient = crf.compute_gradient(sentences[sentence_idx].tokens, sentence_idx)
             optimizers.apply_gradient_update(gradient, 1)
 
     # clear cache

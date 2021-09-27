@@ -1,4 +1,5 @@
 # models.py
+import math
 
 from optimizers import *
 from nerdata import *
@@ -390,7 +391,7 @@ class CrfNerModel(object):
         for token_idx in range(num_tokens):
             # emission feature sum
             tag_idx = self.tag_indexer.index_of(bio_tags[token_idx])
-            feature_sum += Counter(features[token_idx][tag_idx])
+            feature_sum.update(features[token_idx][tag_idx])
 
             # emission feature expectation (apply forward-backward algorithm here)
             for i in range(num_tokens):
@@ -402,15 +403,14 @@ class CrfNerModel(object):
                     P = product[s] / denominator
 
                     gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[i].chunk)
-                    f = Counter(features[token_idx][gold_tag_idx])
+                    f = Counter()
 
-                    for k in f.keys():
-                        f[k] = f[k] * P
+                    for k in features[token_idx][gold_tag_idx]:
+                        f[k] = P
 
-                    expectation += f
-
-        gradient = feature_sum - expectation
-        return gradient
+                    expectation.update(f)
+        feature_sum.subtract(expectation)
+        return feature_sum
 
     def update_scorer(self, feature_cache):
         self.scorer = FeatureBasedSequenceScorer(self.tag_indexer, self.feature_weights, feature_cache)
@@ -447,10 +447,18 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     optimizers = UnregularizedAdagradTrainer(feature_weights)
 
     num_epoch = 1
+
+    last_time = time.time()
     for _ in range(num_epoch):
         for sentence_idx in range(len(sentences)):
             if sentence_idx % 100 == 0 and not silent:
+                cur_time = time.time()
+                estimate_total = (cur_time - last_time) * ((len(sentences) - sentence_idx) / 100)
+                estimate_sec = round(estimate_total) % 60
+                estimate_min = math.floor(estimate_total / 60)
                 print("Train %i/%i" % (sentence_idx, len(sentences)))
+                print(f"Estimate Time left: {estimate_min} min {estimate_sec} sec")
+                last_time = cur_time
             crf.update_scorer(feature_cache[sentence_idx])
             labeled_sentence = crf.decode(sentences[sentence_idx].tokens)
             gradient = crf.compute_gradient(labeled_sentence, sentence_idx)

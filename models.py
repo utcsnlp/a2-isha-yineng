@@ -251,11 +251,7 @@ class FeatureBasedSequenceScorer(object):
 
     def score_emission(self, sentence_tokens, tag_idx, word_posn):
         feats = self.feat_cache[word_posn][tag_idx]
-        score = 0
-        for f in feats:
-            score += self.feature_weights[f][tag_idx]
-
-        return score
+        return np.sum(self.feature_weights[feats])
 
 
 class CrfNerModel(object):
@@ -391,9 +387,12 @@ class CrfNerModel(object):
         correct_label_counter = [0] * num_tags
 
         for token_idx in range(num_tokens):
+            # find correct label
+            gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
+
             # emission feature sum
             tag_idx = self.tag_indexer.index_of(bio_tags[token_idx])
-            feature_sum.update(features[token_idx][tag_idx])
+            feature_sum.subtract(features[token_idx][gold_tag_idx])
 
             # emission feature expectation (apply forward-backward algorithm here)
             # To compute P(y_i = s | x)
@@ -402,8 +401,6 @@ class CrfNerModel(object):
             log_product = forward.transpose()[token_idx] + backward.transpose()[token_idx]
             denominator = logsumexp(log_product)
 
-            # find correct label
-            gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
             if self.tag_indexer.index_of(bio_tags[token_idx]) == gold_tag_idx:
                 correct_label_counter[gold_tag_idx] += 1
 
@@ -411,14 +408,11 @@ class CrfNerModel(object):
                 P = np.exp(log_product[s] - denominator)
 
                 f = Counter()
-                for k in features[token_idx][s]:
+                for k in features[token_idx][gold_tag_idx]:
                     f[k] = P
 
                 expectation.update(f)
-        feature_sum.subtract(expectation)
-
-        for k in feature_sum.keys():
-            feature_sum[k] = np.array([-feature_sum[k] * num_tokens + correct_label_counter[i] for i in range(num_tags)])
+        feature_sum.update(expectation)
 
         return feature_sum
 
@@ -452,11 +446,11 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
 
     # raise Exception("IMPLEMENT THE REST OF ME")
     # initialize CRF
-    feature_weights = np.zeros((len(feature_indexer), len(tag_indexer)))
+    feature_weights = np.zeros(len(feature_indexer))
     crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
     optimizers = UnregularizedAdagradTrainer(feature_weights)
 
-    num_epoch = 4
+    num_epoch = 1
 
     last_time = time.time()
     for _ in range(num_epoch):

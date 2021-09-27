@@ -241,7 +241,7 @@ class FeatureBasedSequenceScorer(object):
         prev_tag = self.tag_indexer.get_object(prev_tag_idx)
         curr_tag = self.tag_indexer.get_object(curr_tag_idx)
 
-        # rule, I-XXX must follows a B-XXX
+        # rule, I-XXX must follows a B-XXX or I-XXX
         if isI(curr_tag):
             if (isI(prev_tag) or isB(prev_tag)) and get_tag_label(prev_tag) == get_tag_label(curr_tag):
                 return 0
@@ -394,21 +394,20 @@ class CrfNerModel(object):
             feature_sum.update(features[token_idx][tag_idx])
 
             # emission feature expectation (apply forward-backward algorithm here)
-            for i in range(num_tokens):
-                # To compute P(y_i = s | x)
-                # the denominator is the same for each i
-                product = forward.transpose()[i] * backward.transpose()[i]
-                denominator = np.sum(product)
-                for s in range(num_tags):
-                    P = product[s] / denominator
+            # To compute P(y_i = s | x)
+            # the denominator is the same for each i
+            product = forward.transpose()[token_idx] * backward.transpose()[token_idx]
+            denominator = np.sum(product)
+            for s in range(num_tags):
+                P = np.exp(product[s] / denominator)
 
-                    gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[i].chunk)
-                    f = Counter()
+                gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
+                f = Counter()
 
-                    for k in features[token_idx][gold_tag_idx]:
-                        f[k] = P
+                for k in features[token_idx][gold_tag_idx]:
+                    f[k] = P
 
-                    expectation.update(f)
+                expectation.update(f)
         feature_sum.subtract(expectation)
         return feature_sum
 

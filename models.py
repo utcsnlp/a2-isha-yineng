@@ -4,7 +4,6 @@ import math
 from optimizers import *
 from nerdata import *
 from utils import *
-
 import random
 import time
 
@@ -12,6 +11,7 @@ from collections import Counter
 from typing import List
 
 import numpy as np
+from scipy.special import logsumexp
 
 
 class ProbabilisticSequenceScorer(object):
@@ -351,11 +351,11 @@ class CrfNerModel(object):
         # recursion step
         for cur_token in range(1, num_tokens):
             for cur_tag in range(num_tags):
-                total = 0
+                raw_value = []
                 emission_score = self.scorer.score_emission(sentence_tokens, cur_tag, cur_token)  # move out of loop to avoid recompute
                 for prev_tag in range(num_tags):
-                    total += np.logaddexp(total, forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
-                forward[cur_tag][cur_token] = total
+                    raw_value.append(forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
+                forward[cur_tag][cur_token] = logsumexp(raw_value)
 
         #--- Backward Part ---
         # initialization step
@@ -365,11 +365,11 @@ class CrfNerModel(object):
         # recursion step
         for cur_token in range(num_tokens - 2, -1, -1):
             for cur_tag in range(num_tags):
-                total = 0
+                raw_value = []
                 for next_tag in range(num_tags):
-                    total += np.logaddexp(total, backward[next_tag][cur_token+1] +
-                           self.scorer.score_emission(sentence_tokens, next_tag, cur_token+1) + self.scorer.score_transition(sentence_tokens, cur_tag, next_tag))
-                backward[cur_tag][cur_token] = total
+                    raw_value.append(backward[next_tag][cur_token+1] +
+                                     self.scorer.score_emission(sentence_tokens, next_tag, cur_token+1) + self.scorer.score_transition(sentence_tokens, cur_tag, next_tag))
+                backward[cur_tag][cur_token] = logsumexp(raw_value)
 
         return forward, backward  # back to real space
 
@@ -396,10 +396,11 @@ class CrfNerModel(object):
             # emission feature expectation (apply forward-backward algorithm here)
             # To compute P(y_i = s | x)
             # the denominator is the same for each i
-            product = forward.transpose()[token_idx] * backward.transpose()[token_idx]
-            denominator = np.sum(product)
+            # note the matrix's value is in log space, so the computing below should also in log space
+            log_product = forward.transpose()[token_idx] + backward.transpose()[token_idx]
+            denominator = logsumexp(log_product)
             for s in range(num_tags):
-                P = np.exp(product[s] / denominator)
+                P = np.exp(log_product[s] - denominator)
 
                 gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[token_idx].chunk)
                 f = Counter()

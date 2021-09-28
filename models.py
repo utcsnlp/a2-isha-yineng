@@ -1,9 +1,8 @@
-# models.py
+import math
 
 from optimizers import *
 from nerdata import *
 from utils import *
-
 import random
 import time
 
@@ -11,6 +10,7 @@ from collections import Counter
 from typing import List
 
 import numpy as np
+from scipy.special import logsumexp
 
 
 class ProbabilisticSequenceScorer(object):
@@ -18,7 +18,6 @@ class ProbabilisticSequenceScorer(object):
     Scoring function for sequence models based on conditional probabilities.
     Scores are provided for three potentials in the model: initial scores (applied to the first tag),
     emissions, and transitions. Note that CRFs typically don't use potentials of the first type.
-
     Attributes:
         tag_indexer: Indexer mapping BIO tags to indices. Useful for dynamic programming
         word_indexer: Indexer mapping words to indices in the emission probabilities matrix
@@ -48,7 +47,6 @@ class ProbabilisticSequenceScorer(object):
 class HmmNerModel(object):
     """
     HMM NER model for predicting tags
-
     Attributes:
         tag_indexer: Indexer mapping BIO tags to indices. Useful for dynamic programming
         word_indexer: Indexer mapping words to indices in the emission probabilities matrix
@@ -240,7 +238,7 @@ class FeatureBasedSequenceScorer(object):
         prev_tag = self.tag_indexer.get_object(prev_tag_idx)
         curr_tag = self.tag_indexer.get_object(curr_tag_idx)
 
-        # rule, I-XXX must follows a B-XXX
+        # rule, I-XXX must follows a B-XXX or I-XXX
         if isI(curr_tag):
             if (isI(prev_tag) or isB(prev_tag)) and get_tag_label(prev_tag) == get_tag_label(curr_tag):
                 return 0
@@ -250,11 +248,7 @@ class FeatureBasedSequenceScorer(object):
 
     def score_emission(self, sentence_tokens, tag_idx, word_posn):
         feats = self.feat_cache[word_posn][tag_idx]
-        score = 0
-        for f in feats:
-            score += self.feature_weights[f][tag_idx]
-
-        return score
+        return np.sum(self.feature_weights[feats])
 
 
 class CrfNerModel(object):
@@ -299,7 +293,7 @@ class CrfNerModel(object):
                 emission_score = self.scorer.score_emission(sentence_tokens, cur_tag, cur_token)  # move out of loop to avoid recompute
                 for prev_tag in range(num_tags):
                     transition_score = self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag)
-                    score = viterbi[cur_tag][cur_token-1] + emission_score + transition_score
+                    score = viterbi[prev_tag][cur_token-1] + emission_score + transition_score
                     if score > max_score:
                         max_score = score
                         arg_max = prev_tag
@@ -350,11 +344,11 @@ class CrfNerModel(object):
         # recursion step
         for cur_token in range(1, num_tokens):
             for cur_tag in range(num_tags):
-                total = 0
+                raw_value = []
                 emission_score = self.scorer.score_emission(sentence_tokens, cur_tag, cur_token)  # move out of loop to avoid recompute
                 for prev_tag in range(num_tags):
-                    total += np.logaddexp(total, forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
-                forward[cur_tag][cur_token] = total
+                    raw_value.append(forward[prev_tag][cur_token-1] + emission_score + self.scorer.score_transition(sentence_tokens, prev_tag, cur_tag))
+                forward[cur_tag][cur_token] = logsumexp(raw_value)
 
         #--- Backward Part ---
         # initialization step
@@ -364,53 +358,53 @@ class CrfNerModel(object):
         # recursion step
         for cur_token in range(num_tokens - 2, -1, -1):
             for cur_tag in range(num_tags):
-                total = 0
+                raw_value = []
                 for next_tag in range(num_tags):
-                    total += np.logaddexp(total, backward[next_tag][cur_token+1] +
-                           self.scorer.score_emission(sentence_tokens, next_tag, cur_token+1) + self.scorer.score_transition(sentence_tokens, cur_tag, next_tag))
-                backward[cur_tag][cur_token] = total
+                    raw_value.append(backward[next_tag][cur_token+1] +
+                                     self.scorer.score_emission(sentence_tokens, next_tag, cur_token+1) + self.scorer.score_transition(sentence_tokens, cur_tag, next_tag))
+                backward[cur_tag][cur_token] = logsumexp(raw_value)
 
         return forward, backward  # back to real space
 
-    def compute_gradient(self, labeled_sentence: LabeledSentence, sentence_idx: int):
+    def compute_gradient(self, sentence: LabeledSentence, sentence_idx: int):
         """
         sentence with gold (sentence.tokens[0].chunk) and predicted labels (sentence.chunks)
         """
-        num_tokens = len(labeled_sentence.tokens)
-        bio_tags = bio_tags_from_chunks(labeled_sentence.chunks, num_tokens)  # the predicted labels
+        num_tokens = len(sentence.tokens)
         num_tags = len(self.tag_indexer)
         features = self.feature_cache[sentence_idx]
 
         # use to compute marginal probabilities P(s_t = n | x).
-        forward, backward = self.get_forward_backward(labeled_sentence.tokens)
+        forward, backward = self.get_forward_backward(sentence.tokens)
 
         feature_sum = Counter()
         expectation = Counter()
 
         for token_idx in range(num_tokens):
+            # find correct label
+            gold_tag_idx = self.tag_indexer.index_of(bio_tags_from_chunks(sentence.chunks, len(sentence.tokens))[token_idx])
+
             # emission feature sum
-            tag_idx = self.tag_indexer.index_of(bio_tags[token_idx])
-            feature_sum += Counter(features[token_idx][tag_idx])
+            feature_sum.update(features[token_idx][gold_tag_idx])
 
             # emission feature expectation (apply forward-backward algorithm here)
-            for i in range(num_tokens):
-                # To compute P(y_i = s | x)
-                # the denominator is the same for each i
-                product = forward.transpose()[i] * backward.transpose()[i]
-                denominator = np.sum(product)
-                for s in range(num_tags):
-                    P = product[s] / denominator
+            # To compute P(y_i = s | x)
+            # the denominator is the same for each i
+            # note the matrix's value is in log space, so the computing below should also in log space
+            log_product = forward.transpose()[token_idx] + backward.transpose()[token_idx]
+            denominator = logsumexp(log_product)
 
-                    gold_tag_idx = self.tag_indexer.index_of(labeled_sentence.tokens[i].chunk)
-                    f = Counter(features[token_idx][gold_tag_idx])
+            for s in range(num_tags):
+                P = np.exp(log_product[s] - denominator)
 
-                    for k in f.keys():
-                        f[k] = f[k] * P
+                f = Counter()
+                for k in features[token_idx][s]:
+                    f[k] = P
 
-                    expectation += f
+                expectation.update(f)
+        feature_sum.subtract(expectation)
 
-        gradient = feature_sum - expectation
-        return gradient
+        return feature_sum
 
     def update_scorer(self, feature_cache):
         self.scorer = FeatureBasedSequenceScorer(self.tag_indexer, self.feature_weights, feature_cache)
@@ -442,18 +436,25 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
 
     # raise Exception("IMPLEMENT THE REST OF ME")
     # initialize CRF
-    feature_weights = np.zeros((len(feature_indexer), len(tag_indexer)))
+    feature_weights = np.zeros(len(feature_indexer))
     crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
     optimizers = UnregularizedAdagradTrainer(feature_weights)
 
     num_epoch = 1
+
+    last_time = time.time()
     for _ in range(num_epoch):
         for sentence_idx in range(len(sentences)):
             if sentence_idx % 100 == 0 and not silent:
+                cur_time = time.time()
+                estimate_total = (cur_time - last_time) * ((len(sentences) - sentence_idx) / 100)
+                estimate_sec = round(estimate_total) % 60
+                estimate_min = math.floor(estimate_total / 60)
                 print("Train %i/%i" % (sentence_idx, len(sentences)))
+                print(f"Estimate Time left: {estimate_min} min {estimate_sec} sec")
+                last_time = cur_time
             crf.update_scorer(feature_cache[sentence_idx])
-            labeled_sentence = crf.decode(sentences[sentence_idx].tokens)
-            gradient = crf.compute_gradient(labeled_sentence, sentence_idx)
+            gradient = crf.compute_gradient(sentences[sentence_idx], sentence_idx)
             optimizers.apply_gradient_update(gradient, 1)
 
     # clear cache

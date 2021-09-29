@@ -322,7 +322,59 @@ class CrfNerModel(object):
         :param sentence_tokens: List of the tokens in the sentence to tag
         :return: The LabeledSentence consisting of predictions over the sentence
         """
-        raise Exception("IMPLEMENT ME")
+        # raise Exception("IMPLEMENT ME")
+        beam_width = 3
+        num_tokens = len(sentence_tokens)
+        num_tags = len(self.tag_indexer)
+        scores = np.zeros((beam_width, num_tokens))  # a matrix for dynamic programming
+        ref_pointer = np.zeros((beam_width, num_tokens))
+        back_pointer = np.zeros((beam_width, num_tokens))
+
+        # if feature_cache is None, need to extract feature first
+        if self.feature_cache is None:
+            feature_cache = [[[] for k in range(num_tags)] for j in range(num_tokens)]
+            for word_idx in range(num_tokens):
+                for tag_idx in range(num_tags):
+                    feature_cache[word_idx][tag_idx] = extract_emission_features(sentence_tokens, word_idx,
+                                                                                 self.tag_indexer.get_object(tag_idx),
+                                                                                 self.feature_indexer,
+                                                                                 add_to_indexer=False)
+            self.update_scorer(feature_cache)
+
+        back_pointer[:, 0] = -1
+        curr_token = np.zeros((num_tags))
+        for tag_idx in range(num_tags):
+            curr_token[tag_idx] = self.scorer.score_init(sentence_tokens, tag_idx) + self.scorer.score_emission(
+                sentence_tokens, tag_idx, 0)
+
+        scores[:, 0] = np.sort(curr_token)[-beam_width:]
+        ref_pointer[:, 0] = np.argsort(curr_token)[-beam_width:]
+
+        for token in range(1, num_tokens):
+            curr_token = np.zeros((beam_width * num_tags))
+            for prev_tag in range(beam_width):
+                for cur_tag in range(num_tags):
+                    curr_token[prev_tag * num_tags + cur_tag] = scores[prev_tag][token - 1] + self.scorer.score_emission(
+                        sentence_tokens, cur_tag, token) + self.scorer.score_transition(sentence_tokens,
+                                                                                       ref_pointer[prev_tag][token - 1],
+                                                                                       cur_tag)
+
+            scores[:, token] = np.sort(curr_token)[-beam_width:]
+            ref_pointer[:, token] = np.argsort(curr_token)[-beam_width] % num_tags
+            back_pointer[:, token] = int(np.argsort(curr_token)[-beam_width] / num_tags)
+
+        bio_tags = [""] * num_tokens
+
+        last_tag = np.argmax(scores, axis=0)[-1]
+        bio_tags[-1] = self.tag_indexer.get_object(ref_pointer[last_tag, -1])
+
+        last_tag = int(back_pointer[last_tag][-1])
+
+        for cur_token in range(num_tokens - 2, -1, -1):
+            bio_tags[cur_token] = self.tag_indexer.get_object(ref_pointer[last_tag, cur_token])
+            last_tag = int(back_pointer[last_tag][cur_token])
+
+        return LabeledSentence(sentence_tokens, chunks_from_bio_tag_seq(bio_tags))
 
     def get_forward_backward(self, sentence_tokens: List[Token]):
         """
@@ -440,7 +492,7 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
     optimizers = UnregularizedAdagradTrainer(feature_weights)
 
-    num_epoch = 1
+    num_epoch = 3
 
     last_time = time.time()
     for _ in range(num_epoch):

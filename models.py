@@ -495,11 +495,11 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     num_epoch = 3
 
     last_time = time.time()
-    for _ in range(num_epoch):
+    for i in range(num_epoch):
         for sentence_idx in range(len(sentences)):
             if sentence_idx % 100 == 0 and not silent:
                 cur_time = time.time()
-                estimate_total = (cur_time - last_time) * ((len(sentences) - sentence_idx) / 100)
+                estimate_total = (cur_time - last_time) * ((len(sentences) * (num_epoch - i) - sentence_idx) / 100)
                 estimate_sec = round(estimate_total) % 60
                 estimate_min = math.floor(estimate_total / 60)
                 print("Train %i/%i" % (sentence_idx, len(sentences)))
@@ -544,4 +544,41 @@ def extract_emission_features(sentence_tokens: List[Token], word_index: int, tag
             active_pos = sentence_tokens[word_index + idx_offset].pos
         maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Word" + repr(idx_offset) + "=" + active_word)
         maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Pos" + repr(idx_offset) + "=" + active_pos)
+
+    # additional feature template 1: word shape, lower-case -> x, upper-case -> X, numbers -> d
+    word_shape = []
+
+    # additional feature template 2: short word shape, xxx -> x, XXXxxxddd -> Xxd
+    short_shape = []
+    last_shape = ""
+    for char in curr_word:
+        if char.isupper():
+            shape = "X"
+        elif char.islower():
+            shape = "x"
+        elif char.isdigit():
+            shape = "d"
+        else:
+            shape = char
+
+        word_shape.append(shape)
+
+        if shape != last_shape:  # ignore consecutive shape
+            short_shape.append(shape)
+            last_shape = shape
+
+    active_word = "".join(word_shape)
+    maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":WordShape" + "=" + active_word)
+
+    active_word = "".join(short_shape)
+    maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":ShortShape" + "=" + active_word)
+
+    # additional feature template 3: prefix (the first 2 char)
+    active_word = curr_word[:2]
+    maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Prefix" + "=" + active_word)
+
+    # additional feature template 4: suffix (the last 2 char)
+    active_word = curr_word[-2:]
+    maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Suffix" + "=" + active_word)
+
     return np.asarray(feats, dtype=int)

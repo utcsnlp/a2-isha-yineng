@@ -492,7 +492,7 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
     optimizers = UnregularizedAdagradTrainer(feature_weights)
 
-    num_epoch = 1
+    num_epoch = 3
 
     last_time = time.time()
     for i in range(num_epoch):
@@ -564,22 +564,22 @@ def extract_emission_features(sentence_tokens: List[Token], word_index: int, tag
 
         word_shape.append(shape)
 
-        # if shape != last_shape:  # ignore consecutive shape
-        #     short_shape.append(shape)
-        #     last_shape = shape
+        if shape != last_shape:  # ignore consecutive shape
+            short_shape.append(shape)
+            last_shape = shape
 
     active_word = "".join(word_shape)
     maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":WordShape" + "=" + active_word)
 
-    # active_word = "".join(short_shape)
-    # maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":ShortShape" + "=" + active_word)
+    active_word = "".join(short_shape)
+    maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":ShortShape" + "=" + active_word)
 
     # additional feature template 3: prefix (the first 2 char)
     # active_word = curr_word[:2]
     # maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Prefix" + "=" + active_word)
 
     # additional feature template 4: suffix (the last 2 char)
-    # active_word = curr_word[-2:]
-    # maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Suffix" + "=" + active_word)
+    active_word = curr_word[-2:]
+    maybe_add_feature(feats, feature_indexer, add_to_indexer, tag + ":Suffix" + "=" + active_word)
 
     return np.asarray(feats, dtype=int)

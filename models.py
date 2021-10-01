@@ -490,9 +490,9 @@ def train_crf_model(sentences: List[LabeledSentence], silent: bool=False) -> Crf
     # initialize CRF
     feature_weights = np.zeros(len(feature_indexer))
     crf = CrfNerModel(tag_indexer, feature_indexer, feature_weights, feature_cache)
-    optimizers = UnregularizedAdagradTrainer(feature_weights)
+    optimizers = UnregularizedAdagradTrainer(feature_weights, 0.75)
 
-    num_epoch = 3
+    num_epoch = 5
 
     last_time = time.time()
     for i in range(num_epoch):
